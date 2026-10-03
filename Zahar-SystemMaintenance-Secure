@@ -1,0 +1,157 @@
+#requires -Version 5.1
+<#
+.SYNOPSIS
+    Zahar System Maintenance — Complete Defensive Edition
+.DESCRIPTION
+    صيانة وتدقيق دفاعي لنظام Windows. لا تنفذ اختراقاً ولا تكسر كلمات مرور.
+    التغييرات الحساسة تتطلب معاينة وتأكيداً ونقطة استعادة ونسخة إعدادات.
+#>
+[CmdletBinding(SupportsShouldProcess=$true)]
+param(
+    [switch]$AuditOnly,
+    [switch]$NoPause,
+    [string]$DataRoot = "$env:ProgramData\ZaharSystemMaintenance"
+)
+Set-StrictMode -Version Latest
+$ErrorActionPreference = 'Stop'
+$script:Version = '2.1.0-secure'
+$script:LogPath = Join-Path $DataRoot 'maintenance.log'
+$script:ReportRoot = Join-Path $DataRoot 'Reports'
+$script:BackupRoot = Join-Path $DataRoot 'Backups'
+$script:BaselineRoot = Join-Path $DataRoot 'Baselines'
+$script:LockPath = Join-Path $DataRoot 'running.lock'
+$script:StartedAt = Get-Date
+
+function Initialize-App {
+    try {
+        New-Item -ItemType Directory -Path $DataRoot,$ReportRoot,$BackupRoot,$BaselineRoot -Force -ErrorAction Stop | Out-Null
+        if (-not (Test-Path $script:LogPath)) { New-Item -ItemType File -Path $script:LogPath -Force | Out-Null }
+        $lines = Get-Content $script:LogPath -ErrorAction SilentlyContinue
+        if ($lines.Count -gt 5000) { $lines | Select-Object -Last 2500 | Set-Content $script:LogPath -Encoding UTF8 }
+        if (Test-Path $script:LockPath) {
+            $old = Get-Item $script:LockPath -ErrorAction SilentlyContinue
+            if ($old -and ((Get-Date)-$old.LastWriteTime).TotalHours -lt 12) { throw 'يبدو أن نسخة أخرى من الأداة تعمل حالياً.' }
+            Remove-Item $script:LockPath -Force -ErrorAction SilentlyContinue
+        }
+        New-Item -ItemType File -Path $script:LockPath -Force | Out-Null
+    } catch { throw "فشل تهيئة الأداة: $($_.Exception.Message)" }
+}
+function Write-Log { param([string]$Message,[ValidateSet('INFO','WARN','ERROR','SUCCESS')][string]$Level='INFO'); $line="[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] [$Level] $Message"; try { Add-Content $script:LogPath $line -Encoding UTF8 } catch {}; $c=@{INFO='Gray';WARN='Yellow';ERROR='Red';SUCCESS='Green'}[$Level]; Write-Host $line -ForegroundColor $c }
+function Test-Admin { $p=[Security.Principal.WindowsPrincipal]::new([Security.Principal.WindowsIdentity]::GetCurrent()); $p.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator) }
+function Confirm-Action { param([string]$Text); Write-Host "`n$Text" -ForegroundColor Yellow; (Read-Host 'اكتب YES للمتابعة أو أي شيء للإلغاء') -ceq 'YES' }
+function Invoke-Safe { param([string]$Name,[scriptblock]$Action); Write-Log "بدء: $Name"; try { & $Action; Write-Log "اكتملت: $Name" 'SUCCESS'; $true } catch { Write-Log "فشل '$Name': $($_.Exception.Message)" 'ERROR'; $false } }
+function New-AutoRestorePoint {
+    if (-not (Test-Admin)) { Write-Log 'يلزم Administrator لنقطة الاستعادة.' 'ERROR'; return $false }
+    try { Checkpoint-Computer -Description "Zahar_Auto_$(Get-Date -Format yyyyMMdd_HHmmss)" -RestorePointType MODIFY_SETTINGS -ErrorAction Stop; Write-Log 'تم إنشاء نقطة استعادة.' 'SUCCESS'; return $true }
+    catch { Write-Log "فشل إنشاء نقطة الاستعادة: $($_.Exception.Message)" 'ERROR'; return $false }
+}
+function Invoke-ProtectedChange { param([string]$Name,[string]$Description,[scriptblock]$Action)
+    if ($AuditOnly) { Write-Log "AuditOnly: تمت معاينة '$Name' دون تغيير." 'WARN'; return $false }
+    if (-not (Confirm-Action $Description)) { return $false }
+    if (-not (New-AutoRestorePoint)) { Write-Log 'أُوقفت العملية لأن نقطة الاستعادة لم تُنشأ.' 'ERROR'; return $false }
+    $stamp=Get-Date -Format yyyyMMdd_HHmmss; $dest=Join-Path $script:BackupRoot "$stamp-$($Name -replace '[^a-zA-Z0-9_-]','_')"
+    New-Item -ItemType Directory -Path $dest -Force | Out-Null
+    Write-Log "تم إنشاء مجلد نسخ إعدادات: $dest"
+    return (Invoke-Safe $Name $Action)
+}
+function Get-Prop { param($Object,[string]$Name); try { $Object.$Name } catch { $null } }
+function Get-ProcessPathSafe { param([int]$Id); try { (Get-Process -Id $Id -ErrorAction Stop).Path } catch { $null } }
+
+function Get-SystemHealth {
+    $r=[ordered]@{Generated=Get-Date;Computer=$env:COMPUTERNAME;Version=$script:Version}
+    try {$r.OS=Get-CimInstance Win32_OperatingSystem | Select Caption,Version,BuildNumber,LastBootUpTime,FreePhysicalMemory,TotalVisibleMemorySize} catch {Write-Log $_ 'WARN'}
+    try {$r.CPU=Get-CimInstance Win32_Processor | Select Name,NumberOfCores,LoadPercentage} catch {Write-Log $_ 'WARN'}
+    try {$r.Disks=Get-PSDrive -PSProvider FileSystem | Select Name,@{N='FreeGB';E={[math]::Round($_.Free/1GB,2)}},@{N='UsedGB';E={[math]::Round($_.Used/1GB,2)}}} catch {Write-Log $_ 'WARN'}
+    try {$r.PhysicalDisks=Get-PhysicalDisk | Select FriendlyName,MediaType,HealthStatus,OperationalStatus,Size} catch {Write-Log 'معلومات PhysicalDisk غير متاحة.' 'WARN'}
+    try {$r.Defender=Get-MpComputerStatus | Select AntivirusEnabled,RealTimeProtectionEnabled,AntivirusSignatureLastUpdated,QuickScanAge,FullScanAge} catch {Write-Log 'تعذر قراءة Defender.' 'WARN'}
+    try {$r.Firewall=Get-NetFirewallProfile | Select Name,Enabled,DefaultInboundAction,DefaultOutboundAction} catch {Write-Log 'تعذر قراءة Firewall.' 'WARN'}
+    try {$r.Updates=Get-HotFix | Sort InstalledOn -Descending | Select -First 10 HotFixID,InstalledOn,Description} catch {Write-Log 'تعذر قراءة التحديثات.' 'WARN'}
+    try {$r.Errors=Get-WinEvent -FilterHashtable @{LogName='System';Level=1,2;StartTime=(Get-Date).AddDays(-7)} -MaxEvents 30 | Select TimeCreated,ProviderName,Id,LevelDisplayName,Message} catch {Write-Log 'تعذر قراءة أحداث النظام.' 'WARN'}
+    return [pscustomobject]$r
+}
+function Show-Health { $r=Get-SystemHealth; Write-Host "`n=== System Health ===" -ForegroundColor Cyan; $r.OS|Format-List|Out-Host; $r.CPU|Format-Table|Out-Host; $r.Disks|Format-Table|Out-Host; $r.PhysicalDisks|Format-Table|Out-Host; $r.Defender|Format-List|Out-Host; $r.Firewall|Format-Table|Out-Host; Write-Host 'آخر التحديثات:'; $r.Updates|Format-Table|Out-Host; Write-Host 'أخطاء النظام الحديثة:'; $r.Errors|Select TimeCreated,ProviderName,Id,LevelDisplayName|Format-Table|Out-Host }
+
+function Get-NetworkAudit {
+    $r=[ordered]@{Generated=Get-Date}
+    try {$r.Wifi=(netsh wlan show interfaces 2>&1|Out-String).Trim();$r.WifiDrivers=(netsh wlan show drivers 2>&1|Out-String).Trim();$r.Profiles=(netsh wlan show profiles 2>&1|Out-String).Trim()}catch{Write-Log $_ 'WARN'}
+    try {$r.IP=Get-NetIPConfiguration}catch{Write-Log $_ 'WARN'}
+    try {$r.DNS=Get-DnsClientServerAddress|Select InterfaceAlias,ServerAddresses}catch{Write-Log $_ 'WARN'}
+    try {$r.Proxy=Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings'|Select ProxyEnable,ProxyServer,AutoConfigURL}catch{Write-Log $_ 'WARN'}
+    try {$r.Firewall=Get-NetFirewallProfile|Select Name,Enabled,DefaultInboundAction,DefaultOutboundAction}catch{Write-Log $_ 'WARN'}
+    try {$r.Connections=Get-NetTCPConnection -State Established|ForEach-Object { $p=Get-Process -Id $_.OwningProcess -ErrorAction SilentlyContinue; [pscustomobject]@{Local="$($_.LocalAddress):$($_.LocalPort)";Remote="$($_.RemoteAddress):$($_.RemotePort)";PID=$_.OwningProcess;Process=$p.ProcessName;Path=(Get-ProcessPathSafe -Id $_.OwningProcess)} }}catch{Write-Log $_ 'WARN'}
+    return [pscustomobject]$r
+}
+function Show-Network { $r=Get-NetworkAudit; Write-Host $r.Wifi; Write-Host "`nDNS/Proxy/Firewall:"; $r.DNS|Format-Table|Out-Host;$r.Proxy|Format-List|Out-Host;$r.Firewall|Format-Table|Out-Host;Write-Host 'الاتصالات:';$r.Connections|Format-Table -Wrap|Out-Host }
+function Show-WifiProfiles { Write-Host (netsh wlan show profiles|Out-String); Write-Log 'تم عرض أسماء الشبكات المحفوظة دون كلمات المرور.' }
+function Show-WifiPassword { $n=Read-Host 'اسم شبكة محفوظة على جهازك'; if ([string]::IsNullOrWhiteSpace($n)){return}; if (-not(Confirm-Action 'سيتم عرض كلمة المرور على الشاشة فقط ولن تُسجل. استخدم ذلك على شبكة تملكها أو تديرها.')){return}; $x=netsh wlan show profile name="$n" key=clear|Out-String;if($x -match 'Key Content\s*:\s*(.+)'){Write-Host "كلمة المرور: $($matches[1].Trim())" -ForegroundColor Yellow}else{Write-Log 'لم توجد كلمة مرور محفوظة أو الاسم غير صحيح.' 'WARN'} }
+
+function Get-StartupAudit {
+    $r=@(); try {$r+=Get-CimInstance Win32_StartupCommand|Select Name,Command,Location,User}catch{Write-Log $_ 'WARN'}
+    try {$r+=Get-ScheduledTask|Where {$_.State -ne 'Disabled'}|ForEach {$a=$_.Actions|Select -First 1;[pscustomobject]@{Name=$_.TaskName;Command=$a.Execute;Arguments=$a.Arguments;Location=$_.TaskPath;User='ScheduledTask'}}}catch{Write-Log $_ 'WARN'}
+    return $r
+}
+function Show-StartupAudit { $r=Get-StartupAudit;$r|Format-Table -Wrap|Out-Host; $sus=$r|Where {$_.Command -match '\\Temp\\|\\AppData\\' -or $_.Command -match '\.vbs$|\.js$|powershell'}; if($sus){Write-Host 'عناصر تحتاج مراجعة:' -ForegroundColor Yellow;$sus|Format-Table -Wrap|Out-Host} }
+function Test-Signatures { $files=@();$r=Get-StartupAudit;foreach($x in $r){if($x.Command -and (Test-Path $x.Command)){try{$s=Get-AuthenticodeSignature $x.Command;$files+=[pscustomobject]@{Path=$x.Command;Status=$s.Status;Signer=$s.SignerCertificate.Subject}}catch{}}};if($files){$files|Format-Table -Wrap|Out-Host}else{Write-Host 'لم يتم العثور على ملفات قابلة للفحص.'} }
+
+function Show-RestorePoints { try {Get-ComputerRestorePoint|Select SequenceNumber,Description,CreationTime|Format-Table|Out-Host}catch{Write-Log $_ 'ERROR'} }
+function Manage-Restore { Write-Host '[1] عرض نقاط الاستعادة';Write-Host '[2] إنشاء نقطة مخصصة';Write-Host '[3] فتح واجهة System Restore';$c=Read-Host 'اختر';switch($c){'1'{Show-RestorePoints};'2'{if(Confirm-Action 'إنشاء نقطة استعادة مخصصة؟'){New-AutoRestorePoint|Out-Null}};'3'{Start-Process rstrui.exe}} }
+function Invoke-SafeCleanup { $paths=@($env:TEMP,"$env:WINDIR\Temp");$items=$paths|Where {Test-Path $_}|ForEach {Get-ChildItem $_ -File -Force -ErrorAction SilentlyContinue};Write-Host "سيتم فحص $($items.Count) ملفاً مؤقتاً.";if(-not(Confirm-Action 'حذف الملفات المؤقتة فقط بعد المعاينة؟')){return};Invoke-ProtectedChange 'SafeCleanup' 'سيتم حذف الملفات المؤقتة غير المقفلة.' {foreach($i in $items){Remove-Item $i.FullName -Force -ErrorAction SilentlyContinue}}|Out-Null }
+function Show-Updates {Get-HotFix|Sort InstalledOn -Descending|Select -First 30|Format-Table|Out-Host;Write-Host 'لفتح Windows Update:';Start-Process 'ms-settings:windowsupdate' -ErrorAction SilentlyContinue}
+function Show-UsersAudit {try{Get-LocalUser|Select Name,Enabled,LastLogon,PasswordRequired|Format-Table|Out-Host;Write-Host 'Administrators:';Get-LocalGroupMember Administrators|Select Name,ObjectClass,PrincipalSource|Format-Table|Out-Host}catch{Write-Log $_ 'ERROR'} }
+
+function Get-Baseline { [ordered]@{Generated=Get-Date;Services=@(Get-Service|Select Name,Status,StartType);Startup=@(Get-StartupAudit);Firewall=@(Get-NetFirewallRule|Where Enabled -eq True|Select DisplayName,Direction,Action,Profile);Users=@(Get-LocalUser|Select Name,Enabled);Tasks=@(Get-ScheduledTask|Select TaskName,TaskPath,State)} }
+function Save-Baseline { $b=Get-Baseline;$p=Join-Path $script:BaselineRoot "baseline_$(Get-Date -Format yyyyMMdd_HHmmss).clixml";$b|Export-Clixml $p;Write-Log "تم حفظ Baseline: $p" 'SUCCESS';Write-Host $p }
+function Compare-Baseline { $p=Get-ChildItem $script:BaselineRoot -Filter '*.clixml'|Sort LastWriteTime -Descending|Select -First 1;if(-not$p){Write-Log 'لا توجد Baseline.' 'WARN';return};$old=Import-Clixml $p;$new=Get-Baseline;Write-Host "مقارنة مع $($p.Name)";Write-Host 'الخدمات الجديدة/المختلفة:';Compare-Object ($old.Services|ForEach Name) ($new.Services|ForEach Name)|Format-Table|Out-Host;Write-Host 'المستخدمون المختلفون:';Compare-Object ($old.Users|ForEach Name) ($new.Users|ForEach Name)|Format-Table|Out-Host;Write-Host 'المهام المختلفة:';Compare-Object ($old.Tasks|ForEach TaskName) ($new.Tasks|ForEach TaskName)|Format-Table|Out-Host }
+function Export-IncidentSnapshot { $stamp=Get-Date -Format yyyyMMdd_HHmmss;$p=Join-Path $script:ReportRoot "Incident_$stamp";New-Item $p -ItemType Directory -Force|Out-Null;Get-Process|Select Name,Id,Path|Export-Csv "$p\Processes.csv" -NoTypeInformation;Get-StartupAudit|Export-Csv "$p\Startup.csv" -NoTypeInformation;Get-NetworkAudit|ConvertTo-Json -Depth 5|Set-Content "$p\Network.json";Get-SystemHealth|ConvertTo-Json -Depth 6|Set-Content "$p\Health.json";Get-WinEvent -FilterHashtable @{LogName='System';StartTime=(Get-Date).AddDays(-1)} -MaxEvents 200|Select TimeCreated,ProviderName,Id,LevelDisplayName,Message|Export-Csv "$p\Events.csv" -NoTypeInformation;Write-Log "تم إنشاء Incident Snapshot: $p" 'SUCCESS';Write-Host $p }
+function Export-AuditReport { $stamp=Get-Date -Format yyyyMMdd_HHmmss;$p=Join-Path $script:ReportRoot "Audit_$stamp.html";$h=@();$h+='<h1>Zahar System Maintenance Audit</h1>'; $h+=(Get-SystemHealth|ConvertTo-Html -Fragment -Depth 5);$h+=(Get-NetworkAudit|ConvertTo-Html -Fragment -Depth 5);$h+=(Get-StartupAudit|ConvertTo-Html -Fragment);ConvertTo-Html -Title 'Zahar Audit' -Body $h|Set-Content $p -Encoding UTF8;Write-Log "تم تصدير التقرير: $p" 'SUCCESS';Write-Host $p }
+function Invoke-PrivacyChange { Invoke-ProtectedChange 'AdvertisingID' 'سيتم تعطيل Advertising ID للمستخدم الحالي فقط بعد إنشاء نقطة استعادة.' { $p='HKCU:\Software\Microsoft\Windows\CurrentVersion\AdvertisingInfo';New-Item $p -Force|Out-Null;New-ItemProperty $p Enabled -PropertyType DWord -Value 0 -Force|Out-Null }|Out-Null }
+
+function Get-AdvancedSecurityAudit {
+    $r=[ordered]@{Generated=Get-Date;Computer=$env:COMPUTERNAME}
+    try {$r.Defender=Get-MpComputerStatus|Select AntivirusEnabled,RealTimeProtectionEnabled,BehaviorMonitorEnabled,IOAVProtectionEnabled,CloudBlockLevel,AntivirusSignatureLastUpdated}catch{Write-Log 'تعذر قراءة إعدادات Defender.' 'WARN'}
+    try {$r.ASR=Get-MpPreference|Select AttackSurfaceReductionRules_Actions,AttackSurfaceReductionRules_Ids}catch{Write-Log 'تعذر قراءة قواعد ASR.' 'WARN'}
+    try {$r.VBS=Get-CimInstance -Namespace root\Microsoft\Windows\DeviceGuard -ClassName Win32_DeviceGuard|Select SecurityServicesRunning,VirtualizationBasedSecurityStatus,CodeIntegrityPolicyEnforcementStatus}catch{Write-Log 'معلومات VBS غير متاحة.' 'WARN'}
+    try {$r.RDP=Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server'|Select fDenyTSConnections}catch{Write-Log 'تعذر قراءة حالة RDP.' 'WARN'}
+    try {$r.NLA=Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp'|Select UserAuthentication}catch{Write-Log 'تعذر قراءة NLA.' 'WARN'}
+    try {$r.SMB=Get-SmbServerConfiguration|Select EnableSMB1Protocol,EnableSMB2Protocol,RequireSecuritySignature,EnableSecuritySignature}catch{Write-Log 'معلومات SMB غير متاحة.' 'WARN'}
+    try {$r.LLMNR=Get-ItemProperty 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\DNSClient' -Name EnableMulticast -ErrorAction SilentlyContinue}catch{$r.LLMNR=$null}
+    try {$r.Accounts=Get-LocalUser|Select Name,Enabled,PasswordRequired,LastLogon}catch{Write-Log 'تعذر قراءة الحسابات المحلية.' 'WARN'}
+    return [pscustomobject]$r
+}
+function Get-SecurityScore {
+    $r=Get-AdvancedSecurityAudit;$score=0;$checks=@()
+    if((Get-Prop $r.Defender 'RealTimeProtectionEnabled') -eq $true){$score+=20;$checks+='[OK] Defender Real-time Protection'}else{$checks+='[WARN] Defender Real-time Protection'}
+    try{$fw=@(Get-NetFirewallProfile|Where Enabled);if($fw.Count -eq 3){$score+=20;$checks+='[OK] Firewall مفعّل للجميع'}else{$checks+='[WARN] Firewall غير مفعّل للجميع'}}catch{$checks+='[WARN] تعذر قراءة Firewall'}
+    if((Get-Prop $r.SMB 'EnableSMB1Protocol') -ne $true){$score+=15;$checks+='[OK] SMBv1 غير مفعّل'}else{$checks+='[WARN] SMBv1 مفعّل'}
+    if((Get-Prop $r.RDP 'fDenyTSConnections') -eq 1 -or (Get-Prop $r.NLA 'UserAuthentication') -eq 1){$score+=15;$checks+='[OK] RDP غير متاح أو NLA مفعّل'}else{$checks+='[WARN] راجع RDP/NLA'}
+    if((Get-Prop $r.VBS 'VirtualizationBasedSecurityStatus') -eq 2){$score+=15;$checks+='[OK] VBS يعمل'}else{$checks+='[INFO] VBS غير مفعّل أو غير متاح'}
+    try{if(@(Get-LocalGroupMember Administrators).Count -le 2){$score+=15;$checks+='[OK] عدد المسؤولين محدود'}else{$checks+='[WARN] راجع Administrators'}}catch{$checks+='[WARN] تعذر قراءة المسؤولين'}
+    [pscustomobject]@{Score=$score;Max=100;Checks=$checks;Details=$r}
+}
+function Show-SecurityScore { $s=Get-SecurityScore;Write-Host "`nSecurity Score: $($s.Score)/$($s.Max)" -ForegroundColor Cyan;$s.Checks|ForEach{Write-Host $_};Write-Host 'التقييم إرشادي وليس ضماناً للأمان.' -ForegroundColor Yellow }
+function Export-FirewallBackup { param([string]$Folder=$script:BackupRoot);$p=Join-Path $Folder "Firewall_$(Get-Date -Format yyyyMMdd_HHmmss).clixml";try{Get-NetFirewallRule|Export-Clixml $p;Write-Log "تم نسخ قواعد Firewall إلى $p" 'SUCCESS'}catch{Write-Log "فشل نسخ Firewall: $($_.Exception.Message)" 'ERROR'} }
+function Invoke-SafeHardening {
+    Write-Host '[1] تفعيل Windows Firewall لجميع الملفات';Write-Host '[2] تعطيل SMBv1';Write-Host '[3] تعطيل LLMNR';Write-Host '[4] تفعيل SMB Signing';Write-Host '[5] عرض تقرير Defender/ASR فقط';$c=Read-Host 'اختر'
+    switch($c){
+        '1'{Invoke-ProtectedChange 'EnableFirewall' 'تفعيل Firewall لجميع الملفات وحفظ نسخة القواعد.' {Export-FirewallBackup;Set-NetFirewallProfile -Profile Domain,Public,Private -Enabled True}|Out-Null}
+        '2'{Invoke-ProtectedChange 'DisableSMB1' 'تعطيل SMBv1 قد يمنع أجهزة قديمة من الاتصال.' {Disable-WindowsOptionalFeature -Online -FeatureName SMB1Protocol -NoRestart -ErrorAction Stop|Out-Host}|Out-Null}
+        '3'{Invoke-ProtectedChange 'DisableLLMNR' 'تعطيل LLMNR قد يؤثر على اكتشاف بعض الأجهزة القديمة.' {$p='HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\DNSClient';New-Item $p -Force|Out-Null;New-ItemProperty $p EnableMulticast -PropertyType DWord -Value 0 -Force|Out-Null}|Out-Null}
+        '4'{Invoke-ProtectedChange 'EnableSMBSigning' 'تفعيل SMB Signing قد يؤثر على عملاء قدامى.' {Set-SmbServerConfiguration -RequireSecuritySignature $true -EnableSecuritySignature $true -Force}|Out-Null}
+        '5'{Get-AdvancedSecurityAudit|Format-List|Out-Host}
+    }
+}
+function Show-AdvancedAudit { $r=Get-AdvancedSecurityAudit;$r|Format-List|Out-Host;Write-Host 'قواعد Firewall الواردة المفعّلة:';try{Get-NetFirewallRule -Direction Inbound -Enabled True|Select DisplayName,Action,Profile|Format-Table -Wrap|Out-Host}catch{};Write-Host 'PowerShell/WMI persistence review:';Get-StartupAudit|Where {$_.Command -match 'powershell|wscript|cscript|mshta|wmic|-enc|encoded'}|Format-Table -Wrap|Out-Host;try{Get-CimInstance -Namespace root\subscription -Class __EventConsumer -ErrorAction Stop|Select Name,__CLASS|Format-Table|Out-Host}catch{Write-Log 'تعذر قراءة WMI consumers.' 'WARN'} }
+function Protect-Reports { if($AuditOnly){Write-Log 'AuditOnly: لم تتغير صلاحيات التقارير.' 'WARN';return};Invoke-ProtectedChange 'ProtectReports' 'تقييد مجلد التقارير للمستخدم الحالي وAdministrators وSYSTEM.' {icacls $DataRoot /inheritance:r|Out-Null;icacls $DataRoot /grant:r "${env:USERNAME}:(OI)(CI)F" 'SYSTEM:(OI)(CI)F' 'Administrators:(OI)(CI)F'|Out-Null}|Out-Null }
+
+function Show-Header { param([string]$Title='القائمة الرئيسية');Clear-Host;Write-Host '╔══════════════════════════════════════════════════════════════╗' -ForegroundColor Cyan;Write-Host "║  ZAHAR SYSTEM MAINTENANCE v$script:Version" -ForegroundColor Cyan;Write-Host "║  $Title" -ForegroundColor Cyan;Write-Host '╚══════════════════════════════════════════════════════════════╝' -ForegroundColor Cyan;if($AuditOnly){Write-Host 'MODE: AUDIT ONLY — لا توجد تغييرات' -ForegroundColor Yellow}else{Write-Host 'MODE: INTERACTIVE — التأكيد ونقطة الاستعادة مطلوبان للتغييرات' -ForegroundColor Green};Write-Host ''}
+function Pause-Menu { if(-not$NoPause){Read-Host "`nاضغط Enter للمتابعة"|Out-Null} }
+function Invoke-SystemMenu { $r=$true;while($r){Show-Header 'فحص النظام والصحة';@('[1] System Health Check','[2] Safe Cleanup','[3] Windows Update Audit','[4] Restore Point Manager','[B] رجوع')|ForEach{Write-Host $_};$c=Read-Host 'اختر';try{switch($c.ToUpper()){ '1'{Show-Health};'2'{Invoke-SafeCleanup};'3'{Show-Updates};'4'{Manage-Restore};'B'{$r=$false;continue};default{Write-Log 'اختيار غير صالح.' 'WARN'}}}catch{Write-Log "خطأ: $($_.Exception.Message)" 'ERROR'};if($r){Pause-Menu}}}
+function Invoke-NetworkMenu { $r=$true;while($r){Show-Header 'الشبكة والاتصالات';@('[1] Network & Privacy Audit','[2] الشبكات المحفوظة','[3] عرض كلمة مرور شبكة محفوظة','[4] Network Security Audit','[5] Safe Network Hardening','[B] رجوع')|ForEach{Write-Host $_};$c=Read-Host 'اختر';try{switch($c.ToUpper()){ '1'{Show-Network};'2'{Show-WifiProfiles};'3'{Show-WifiPassword};'4'{Show-AdvancedAudit};'5'{Invoke-SafeHardening};'B'{$r=$false;continue};default{Write-Log 'اختيار غير صالح.' 'WARN'}}}catch{Write-Log "خطأ: $($_.Exception.Message)" 'ERROR'};if($r){Pause-Menu}}}
+function Invoke-PrivacyMenu { $r=$true;while($r){Show-Header 'الخصوصية والتقارير';@('[1] تقليل Advertising ID','[2] تصدير تقرير HTML شامل','[3] حماية السجلات والتقارير','[B] رجوع')|ForEach{Write-Host $_};$c=Read-Host 'اختر';try{switch($c.ToUpper()){ '1'{Invoke-PrivacyChange};'2'{Export-AuditReport};'3'{Protect-Reports};'B'{$r=$false;continue};default{Write-Log 'اختيار غير صالح.' 'WARN'}}}catch{Write-Log "خطأ: $($_.Exception.Message)" 'ERROR'};if($r){Pause-Menu}}}
+function Invoke-AccountsMenu { $r=$true;while($r){Show-Header 'الحسابات وتسجيل الدخول';@('[1] Local Users & Administrators Audit','[2] Security Score','[3] Advanced Security Audit','[B] رجوع')|ForEach{Write-Host $_};$c=Read-Host 'اختر';try{switch($c.ToUpper()){ '1'{Show-UsersAudit};'2'{Show-SecurityScore};'3'{Show-AdvancedAudit};'B'{$r=$false;continue};default{Write-Log 'اختيار غير صالح.' 'WARN'}}}catch{Write-Log "خطأ: $($_.Exception.Message)" 'ERROR'};if($r){Pause-Menu}}}
+function Invoke-AppsMenu { $r=$true;while($r){Show-Header 'البرامج وبدء التشغيل';@('[1] Startup & Scheduled Tasks Audit','[2] Digital Signature Audit','[3] Incident Snapshot','[B] رجوع')|ForEach{Write-Host $_};$c=Read-Host 'اختر';try{switch($c.ToUpper()){ '1'{Show-StartupAudit};'2'{Test-Signatures};'3'{Export-IncidentSnapshot};'B'{$r=$false;continue};default{Write-Log 'اختيار غير صالح.' 'WARN'}}}catch{Write-Log "خطأ: $($_.Exception.Message)" 'ERROR'};if($r){Pause-Menu}}}
+function Invoke-AdvancedMenu { $r=$true;while($r){Show-Header 'الحماية المتقدمة';@('[1] Security Score','[2] Advanced Security Audit','[3] Safe Security Hardening','[4] حماية السجلات والتقارير','[B] رجوع')|ForEach{Write-Host $_};$c=Read-Host 'اختر';try{switch($c.ToUpper()){ '1'{Show-SecurityScore};'2'{Show-AdvancedAudit};'3'{Invoke-SafeHardening};'4'{Protect-Reports};'B'{$r=$false;continue};default{Write-Log 'اختيار غير صالح.' 'WARN'}}}catch{Write-Log "خطأ: $($_.Exception.Message)" 'ERROR'};if($r){Pause-Menu}}}
+function Invoke-RecoveryMenu { $r=$true;while($r){Show-Header 'التقارير وBaseline والتعافي';@('[1] Restore Point Manager','[2] Baseline: حفظ/مقارنة','[3] Incident Snapshot','[4] تصدير تقرير HTML','[5] Backup & Rollback Information','[B] رجوع')|ForEach{Write-Host $_};$c=Read-Host 'اختر';try{switch($c.ToUpper()){ '1'{Manage-Restore};'2'{Write-Host '[1] حفظ Baseline  [2] مقارنة';$b=Read-Host 'اختر';if($b-eq'1'){Save-Baseline}else{Compare-Baseline}};'3'{Export-IncidentSnapshot};'4'{Export-AuditReport};'5'{Write-Host "النسخ محفوظة في: $script:BackupRoot";Write-Host 'التراجع عن تغييرات خارج الأداة غير مدعوم.'};'B'{$r=$false;continue};default{Write-Log 'اختيار غير صالح.' 'WARN'}}}catch{Write-Log "خطأ: $($_.Exception.Message)" 'ERROR'};if($r){Pause-Menu}}}
+function Invoke-Menu { $run=$true;while($run){Show-Header 'القائمة الرئيسية';@('[1] فحص النظام والصحة','[2] الشبكة والاتصالات','[3] الخصوصية والتقارير','[4] الحسابات وتسجيل الدخول','[5] البرامج وبدء التشغيل','[6] الحماية المتقدمة','[7] التقارير وBaseline والتعافي','[0] خروج')|ForEach{Write-Host $_};$c=Read-Host 'اختر رقم القسم';try{switch($c.ToUpper()){ '1'{Invoke-SystemMenu};'2'{Invoke-NetworkMenu};'3'{Invoke-PrivacyMenu};'4'{Invoke-AccountsMenu};'5'{Invoke-AppsMenu};'6'{Invoke-AdvancedMenu};'7'{Invoke-RecoveryMenu};'0'{$run=$false;continue};default{Write-Log 'اختيار غير صالح.' 'WARN'}}}catch{Write-Log "خطأ غير متوقع: $($_.Exception.Message)" 'ERROR'};if($run){Pause-Menu}}}
+
+try { Initialize-App;Write-Log "بدأت الأداة v$script:Version";if(-not(Test-Admin)){Write-Log 'الأداة ليست بصلاحيات Administrator؛ بعض الوظائف ستفشل.' 'WARN'};if($AuditOnly){Show-Health;Show-Network;Show-StartupAudit;Export-AuditReport}else{Invoke-Menu}} catch { Write-Host "FATAL: $($_.Exception.Message)" -ForegroundColor Red; try{Write-Log $_ 'ERROR'}catch{};exit 1 } finally { if(Test-Path $script:LockPath){Remove-Item $script:LockPath -Force -ErrorAction SilentlyContinue};Write-Log 'انتهت الأداة.' }
