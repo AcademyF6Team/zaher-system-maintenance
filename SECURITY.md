@@ -9,7 +9,7 @@
 ## Reporting a Vulnerability
 
 Please **do not** open a public issue for security bugs.
-Email: security@example.com
+Email: academyf6team@gmail.com
 
 Include:
 - Version
