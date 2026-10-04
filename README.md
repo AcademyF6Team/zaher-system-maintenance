@@ -15,9 +15,9 @@
 ---
 
 ## ⚙️ طريقة التشغيل (Usage)
-1. اذهب إلى صفحة الإصدارات (Releases) وحمل ملف الـ **`Zahar-SystemMaintenance-Secure.zip`**.
+1. اذهب إلى صفحة الإصدارات (Releases) وحمل ملف الـ **`Zaher-SystemMaintenance-Secure.zip`**.
 2. قم فك الضغط عن الملف على جهاز Windows.
-3. انقر بزر الماوس الأيمن على ملف `Zahar-SystemMaintenance-Secure.bat` واختر **Run as administrator** (تشغيل كمسؤول).
+3. انقر بزر الماوس الأيمن على ملف `Zaher-SystemMaintenance-Secure.bat` واختر **Run as administrator** (تشغيل كمسؤول).
 4. اقرأ التحذيرات جيداً قبل تطبيق أي تغيير.
 
 > **ملاحظة أمنية:** استخدم الأداة على جهازك أو أجهزتك المصرح لك بإدارتها فقط.
