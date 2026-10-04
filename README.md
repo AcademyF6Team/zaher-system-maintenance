@@ -1,4 +1,4 @@
-# 🛡️ Zahar System Maintenance Secure
+# 🛡️ Zaher System Maintenance Secure
 
 أداة دفاعية متقدمة مكتوبة بـ PowerShell لصيانة نظام Windows وتدقيق الأمان، الخصوصية، والشبكة.
 
