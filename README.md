@@ -26,7 +26,7 @@
 
 ## 📥 التحميل
 
-[آخر إصدار](https://github.com/user-attachments/files/33024681/Zaher-SystemMaintenance.zip)
+[آخر إصدار](https://github.com/AcademyF6Team/zaher-system-maintenance/releases/latest)
 
 ---
 
@@ -40,3 +40,4 @@
 
 ```powershell
 .\Zaher-SystemMaintenance-Secure.ps1 -AuditOnly
+```
