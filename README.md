@@ -1,28 +1,42 @@
-# 🛡️ Zaher System Maintenance Secure
+# Zaher System Maintenance v3.0 🛡️
 
-أداة دفاعية متقدمة مكتوبة بـ PowerShell لصيانة نظام Windows وتدقيق الأمان، الخصوصية، والشبكة.
+أداة دفاعية مفتوحة المصدر لصيانة وتدقيق أمان Windows.
+مكتوبة بالكامل بـ **PowerShell** و **Batch** — بدون تثبيت، بدون مكتبات خارجية، بدون اتصال بأي خادم.
 
----
-
-## 🚀 المزايا الرئيسية (Features)
-- **System Health Check**: فحص الصحة العامة للنظام.
-- **Network & Firewall Audit**: تدقيق إعدادات الشبكة والجدار الناري.
-- **Security Score**: حساب تقييم ومؤشر الأمان.
-- **Defender, RDP & SMB Audit**: فحص حماية ويندوز ديفندر وبروتوكولات التحكم عن بعد والمشاركة.
-- **HTML Reports**: توليد تقارير مفصلة بصيغة HTML.
-- **Baseline & Incident Snapshot**: أخذ لقطات للنظام وتوفير نقطة استعادة قبل إجراء أي تغييرات حساسة.
+![Version](https://img.shields.io/badge/version-3.0.0-blue)
+![License](https://img.shields.io/badge/license-MIT-green)
+![Platform](https://img.shields.io/badge/platform-Windows%2010%20%7C%2011-lightgrey)
 
 ---
 
-## ⚙️ طريقة التشغيل (Usage)
-1. اذهب إلى صفحة الإصدارات (Releases) وحمل ملف الـ **`Zaher-SystemMaintenance-Secure.zip`**.
-2. قم فك الضغط عن الملف على جهاز Windows.
-3. انقر بزر الماوس الأيمن على ملف `Zaher-SystemMaintenance-Secure.bat` واختر **Run as administrator** (تشغيل كمسؤول).
-4. اقرأ التحذيرات جيداً قبل تطبيق أي تغيير.
+## ✨ الميزات
 
-> **ملاحظة أمنية:** استخدم الأداة على جهازك أو أجهزتك المصرح لك بإدارتها فقط.
+| الميزة | الوصف |
+|---|---|
+| 🎯 **Security Score** | تقييم 0-100 لحالة الجهاز |
+| 🔍 **Advanced Audit** | Defender, ASR, VBS, RDP, SMB, LSASS, UAC |
+| 🛠️ **Safe Hardening** | تفعيل Firewall، تعطيل SMBv1/LLMNR، تفعيل SMB Signing و LSASS Protection |
+| 💾 **Backup + Rollback** | كل تغيير يُحفظ، ويمكن التراجع عنه |
+| 📸 **Incident Snapshot** | لقطة فورية عند الشك باختراق |
+| 📊 **Baseline** | مقارنة دورية لكشف التغيرات |
+| 🔐 **Secure Boot / TPM / BitLocker** | فحص شامل لأمان العتاد |
+| 🕵️ **Hosts & Shares Audit** | كشف التلاعب والاتصالات المفتوحة |
 
 ---
 
-## 📦 الإصدارات (Releases)
-يمكنك تحميل أحدث نسخة مستقرة ومؤمنة دائماً من قسم [Releases](../../releases/latest).
+## 📥 التحميل
+
+[آخر إصدار](https://github.com/USERNAME/Zaher-SystemMaintenance/releases/latest)
+
+---
+
+## 🚀 التشغيل
+
+1. حمّل الحزمة وفك ضغطها.
+2. شغّل `Zaher-SystemMaintenance-Secure.bat` (سيطلب صلاحيات admin).
+3. اختر من القائمة.
+
+### وضع AuditOnly (بدون تغييرات)
+
+```powershell
+.\Zaher-SystemMaintenance-Secure.ps1 -AuditOnly
