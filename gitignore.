@@ -1,0 +1,10 @@
+*.log
+*.tmp
+Reports/
+Backups/
+Baselines/
+running.lock
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini
